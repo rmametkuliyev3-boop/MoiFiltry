@@ -1,0 +1,60 @@
+name: Build MoiFiltry 3 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Unpack MoiFiltry 3
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname '*.zip' | head -1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ZIP project not found"
+            exit 1
+          fi
+          rm -rf project
+          mkdir project
+          unzip -q "$ZIP_FILE" -d project
+
+      - name: Generate Gradle wrapper
+        working-directory: project
+        run: gradle wrapper --gradle-version 8.7
+
+      - name: Build APK
+        working-directory: project
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-3-APK
+          path: project/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
