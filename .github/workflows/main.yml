@@ -1,0 +1,104 @@
+name: Build MoiFiltry 4 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Сборка APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить файлы репозитория
+        uses: actions/checkout@v4
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Установить Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Установить Android SDK 35
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Найти ZIP проекта
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE="$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ОШИБКА: ZIP-файл проекта не найден."
+            exit 1
+          fi
+
+          echo "Найден ZIP: $ZIP_FILE"
+
+          rm -rf project
+          mkdir -p project
+
+          unzip -q "$ZIP_FILE" -d project
+
+          echo "ZIP успешно распакован."
+
+      - name: Найти корень Android проекта
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "project/settings.gradle" ] && [ -d "project/app" ]; then
+            echo "ROOT_DIR=project" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          SUBDIR="$(find project -mindepth 1 -maxdepth 2 -type f -name 'settings.gradle' -print -quit | xargs -r dirname)"
+
+          if [ -n "$SUBDIR" ] && [ -d "$SUBDIR/app" ]; then
+            echo "ROOT_DIR=$SUBDIR" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          echo "ОШИБКА: Android-проект не найден внутри ZIP."
+          exit 1
+
+      - name: Проверить структуру проекта
+        shell: bash
+        run: |
+          set -e
+
+          test -f "$ROOT_DIR/settings.gradle"
+          test -f "$ROOT_DIR/build.gradle"
+          test -f "$ROOT_DIR/app/build.gradle"
+          test -f "$ROOT_DIR/app/src/main/AndroidManifest.xml"
+
+          echo "Структура Android-проекта проверена успешно."
+
+      - name: Установить Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Собрать APK
+        working-directory: ${{ env.ROOT_DIR }}
+        run: |
+          gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Загрузить готовый APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-4-APK
+          path: ${{ env.ROOT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
