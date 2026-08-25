@@ -1,0 +1,236 @@
+name: Build MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Сборка Мои Фильтры 5.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить файлы проекта
+        uses: actions/checkout@v4
+
+      - name: Найти ZIP проекта
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "ПОИСК ZIP ПРОЕКТА"
+          echo "======================================"
+
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ОШИБКА: ZIP-файл проекта не найден."
+            ls -la
+            exit 1
+          fi
+
+          echo "Найден ZIP:"
+          echo "$ZIP_FILE"
+
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Распаковать проект
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "РАСПАКОВКА ПРОЕКТА"
+          echo "======================================"
+
+          rm -rf project_unpacked
+          mkdir -p project_unpacked
+
+          unzip -q "$ZIP_FILE" -d project_unpacked
+
+          echo "Проект распакован."
+
+          echo ""
+          echo "Содержимое:"
+          find project_unpacked -maxdepth 6 -type f | sort
+
+      - name: Найти корень Android-проекта
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "ПОИСК ANDROID-ПРОЕКТА"
+          echo "======================================"
+
+          GRADLEW_PATH=$(find project_unpacked -type f -name "gradlew" | head -n 1 || true)
+
+          if [ -z "$GRADLEW_PATH" ]; then
+            echo "ОШИБКА: gradlew не найден внутри ZIP."
+            echo ""
+            echo "Структура ZIP:"
+            find project_unpacked -maxdepth 10 -type f | sort
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$GRADLEW_PATH")
+
+          echo "Gradle найден:"
+          echo "$GRADLEW_PATH"
+
+          echo ""
+          echo "Корень Android-проекта:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Установить Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Принять лицензии Android SDK
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Установить Android SDK компоненты
+        run: |
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;35.0.0"
+
+      - name: Проверить проект
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          echo "======================================"
+          echo "ПРОВЕРКА ANDROID-ПРОЕКТА"
+          echo "======================================"
+
+          echo "Папка:"
+          pwd
+
+          echo ""
+          echo "Проверяем Gradle..."
+
+          if [ ! -f "./gradlew" ]; then
+            echo "ОШИБКА: gradlew отсутствует."
+            exit 1
+          fi
+
+          chmod +x ./gradlew
+          echo "OK: gradlew"
+
+          if [ -f "./settings.gradle" ] || [ -f "./settings.gradle.kts" ]; then
+            echo "OK: settings.gradle"
+          else
+            echo "ОШИБКА: settings.gradle отсутствует."
+            exit 1
+          fi
+
+          if [ -f "./build.gradle" ] || [ -f "./build.gradle.kts" ]; then
+            echo "OK: основной build.gradle"
+          else
+            echo "ОШИБКА: основной build.gradle отсутствует."
+            exit 1
+          fi
+
+          if [ -d "./app" ]; then
+            echo "OK: app"
+          else
+            echo "ОШИБКА: папка app отсутствует."
+            exit 1
+          fi
+
+          if [ -f "./app/build.gradle" ] || [ -f "./app/build.gradle.kts" ]; then
+            echo "OK: app/build.gradle"
+          else
+            echo "ОШИБКА: app/build.gradle отсутствует."
+            exit 1
+          fi
+
+          echo ""
+          echo "Проверяем MainActivity..."
+
+          MAIN_ACTIVITY=$(find app/src/main -type f \( \
+            -name "MainActivity.java" \
+            -o -name "MainActivity.kt" \
+          \) | head -n 1 || true)
+
+          if [ -z "$MAIN_ACTIVITY" ]; then
+            echo "ОШИБКА: MainActivity не найдена."
+            exit 1
+          fi
+
+          echo "OK: $MAIN_ACTIVITY"
+
+          echo ""
+          echo "Проверяем интерфейс..."
+
+          INDEX_FILE=$(find app/src/main -type f -path "*/assets/index.html" | head -n 1 || true)
+
+          if [ -z "$INDEX_FILE" ]; then
+            echo "ОШИБКА: index.html не найден."
+            exit 1
+          fi
+
+          echo "OK: $INDEX_FILE"
+
+          echo ""
+          echo "======================================"
+          echo "ПРОЕКТ ПРОШЕЛ ПРОВЕРКУ"
+          echo "======================================"
+
+      - name: Собрать APK
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          echo "======================================"
+          echo "СБОРКА APK"
+          echo "======================================"
+
+          ./gradlew clean assembleDebug --stacktrace --no-daemon
+
+      - name: Проверить готовый APK
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "ПОИСК ГОТОВОГО APK"
+          echo "======================================"
+
+          APK=$(find "$PROJECT_DIR" -type f -name "*.apk" | head -n 1 || true)
+
+          if [ -z "$APK" ]; then
+            echo "ОШИБКА: APK не создан."
+            exit 1
+          fi
+
+          echo "APK ГОТОВ:"
+          echo "$APK"
+
+      - name: Загрузить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-5.1-APK
+          path: |
+            **/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
