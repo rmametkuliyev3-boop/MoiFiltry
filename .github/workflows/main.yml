@@ -1,0 +1,125 @@
+name: Build MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Сборка Мои Фильтры 5.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить файлы проекта
+        uses: actions/checkout@v4
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Установить Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Установить Android SDK компоненты
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Найти и распаковать ZIP проекта
+        shell: bash
+        run: |
+          set -e
+
+          echo "Проверяем структуру репозитория..."
+          find . -maxdepth 3 -type f | sort
+
+          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP" ]; then
+            echo "Ошибка: ZIP проекта не найден."
+            exit 1
+          fi
+
+          echo "Найден ZIP: $ZIP"
+
+          rm -rf project
+          mkdir -p project
+
+          unzip -q "$ZIP" -d project
+
+          echo "Содержимое после распаковки:"
+          find project -maxdepth 5 -type f | sort
+
+      - name: Определить корень Android проекта
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "project/settings.gradle" ] || [ -f "project/settings.gradle.kts" ]; then
+            echo "PROJECT_DIR=project" >> "$GITHUB_ENV"
+          else
+            ROOT=$(find project -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -print -quit)
+
+            if [ -z "$ROOT" ]; then
+              echo "Ошибка: settings.gradle не найден."
+              exit 1
+            fi
+
+            DIR=$(dirname "$ROOT")
+            echo "Найден корень проекта: $DIR"
+            echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+          fi
+
+      - name: Установить Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Проверить Android проект
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          echo "Корень проекта:"
+          pwd
+
+          echo "Файлы:"
+          find . -maxdepth 3 -type f | sort
+
+          echo "Gradle:"
+          gradle --version
+
+      - name: Собрать APK
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Найти APK
+        shell: bash
+        run: |
+          set -e
+
+          echo "Найденные APK:"
+          find "$PROJECT_DIR" -type f -name "*.apk" -print
+
+      - name: Загрузить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-5.1-APK
+          path: |
+            ${{ env.PROJECT_DIR }}/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
