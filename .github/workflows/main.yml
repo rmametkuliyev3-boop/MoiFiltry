@@ -1,0 +1,122 @@
+name: Build MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Сборка Мои Фильтры 5.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить файлы проекта
+        uses: actions/checkout@v4
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Установить Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Установить SDK
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Найти и распаковать Android-проект
+        run: |
+          set -e
+
+          echo "Проверяем структуру репозитория..."
+          find . -maxdepth 3 -type f | sort | head -200
+
+          GRADLEW=$(find . -type f -name "gradlew" -print -quit)
+
+          if [ -n "$GRADLEW" ]; then
+            echo "gradlew уже найден: $GRADLEW"
+            exit 0
+          fi
+
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" -print -quit)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Ошибка: ZIP-файл Android-проекта не найден."
+            exit 1
+          fi
+
+          echo "Найден ZIP: $ZIP_FILE"
+
+          mkdir -p project
+          unzip -q "$ZIP_FILE" -d project
+
+          GRADLEW=$(find project -type f -name "gradlew" -print -quit)
+
+          if [ -z "$GRADLEW" ]; then
+            echo "Ошибка: после распаковки gradlew не найден."
+            echo "Содержимое проекта:"
+            find project -maxdepth 5 -type f | sort | head -300
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$GRADLEW")
+
+          echo "Android-проект найден: $PROJECT_DIR"
+
+          cd "$PROJECT_DIR"
+          chmod +x gradlew
+
+          echo "Проверка Gradle Wrapper:"
+          ./gradlew --version
+
+      - name: Сборка APK
+        run: |
+          set -e
+
+          GRADLEW=$(find . -type f -name "gradlew" -print -quit)
+
+          if [ -z "$GRADLEW" ]; then
+            echo "Ошибка: gradlew не найден."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$GRADLEW")
+
+          cd "$PROJECT_DIR"
+          chmod +x gradlew
+
+          echo "Собираем APK из:"
+          pwd
+
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Найти APK
+        run: |
+          set -e
+
+          APK=$(find . -type f -name "*.apk" -print -quit)
+
+          if [ -z "$APK" ]; then
+            echo "Ошибка: APK не найден."
+            exit 1
+          fi
+
+          echo "APK найден: $APK"
+
+      - name: Загрузить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-5.1-APK
+          path: |
+            **/*.apk
+          if-no-files-found: error
