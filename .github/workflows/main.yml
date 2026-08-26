@@ -1,0 +1,106 @@
+name: Build MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MoiFiltry 5.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Check project
+        run: |
+          set -e
+          echo "Проверяем проект..."
+
+          if [ ! -f "settings.gradle" ] && [ ! -f "settings.gradle.kts" ]; then
+            echo "ОШИБКА: settings.gradle не найден"
+            exit 1
+          fi
+
+          if [ ! -d "app" ]; then
+            echo "ОШИБКА: папка app не найдена"
+            exit 1
+          fi
+
+          echo "Проект найден."
+
+      - name: Build APK
+        run: |
+          set -e
+
+          echo "Собираем APK..."
+
+          gradle clean assembleDebug --no-daemon --stacktrace
+
+          echo "Сборка завершена."
+
+      - name: Find APK
+        run: |
+          set -e
+
+          echo "Ищем APK..."
+
+          APK=$(find app/build/outputs/apk -type f -name "*.apk" | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ОШИБКА: APK не найден"
+            exit 1
+          fi
+
+          echo "Найден APK:"
+          echo "$APK"
+
+          mkdir -p release
+
+          cp "$APK" "release/MoiFiltry-5.1.apk"
+
+          SIZE=$(stat -c%s "release/MoiFiltry-5.1.apk")
+
+          echo "Размер APK: $SIZE байт"
+
+          if [ "$SIZE" -lt 100000 ]; then
+            echo "ОШИБКА: APK слишком маленький."
+            exit 1
+          fi
+
+          echo "APK готов."
+
+      - name: Upload ONLY APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-5.1-APK
+          path: release/MoiFiltry-5.1.apk
+          if-no-files-found: error
+          retention-days: 7
