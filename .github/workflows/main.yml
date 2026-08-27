@@ -1,0 +1,140 @@
+name: Build MoiFiltry APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Find and unpack Android project
+        shell: bash
+        run: |
+          set -e
+
+          echo "Ищем ZIP-файл проекта..."
+
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: ZIP-файл проекта не найден."
+            exit 1
+          fi
+
+          echo "Найден ZIP: $ZIP_FILE"
+
+          rm -rf project
+          mkdir -p project
+
+          unzip -q "$ZIP_FILE" -d project
+
+          echo "Содержимое после распаковки:"
+          find project -maxdepth 4 -type f | sort | head -200
+
+          echo "Ищем settings.gradle..."
+
+          SETTINGS_FILE=$(find project -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -print -quit)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle или settings.gradle.kts не найден."
+            echo "Полное содержимое проекта:"
+            find project -type f | sort
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+
+          echo "Корень Android-проекта найден:"
+          echo "$PROJECT_DIR"
+
+          echo "Проверяем структуру проекта..."
+
+          test -f "$PROJECT_DIR/settings.gradle" || \
+          test -f "$PROJECT_DIR/settings.gradle.kts"
+
+          test -f "$PROJECT_DIR/build.gradle" || \
+          test -f "$PROJECT_DIR/build.gradle.kts"
+
+          test -f "$PROJECT_DIR/gradle.properties"
+
+          test -f "$PROJECT_DIR/app/build.gradle" || \
+          test -f "$PROJECT_DIR/app/build.gradle.kts"
+
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+          test -f "$PROJECT_DIR/app/src/main/java/kz/moifiltry/app/MainActivity.java"
+
+          test -f "$PROJECT_DIR/app/src/main/assets/index.html"
+
+          echo "Структура проекта OK"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Generate Gradle wrapper
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          gradle wrapper --gradle-version 8.7
+
+      - name: Make Gradle executable
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Check APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "Проверяем созданный APK..."
+
+          test -f app/build/outputs/apk/debug/app-debug.apk
+
+          APK_SIZE=$(stat -c%s app/build/outputs/apk/debug/app-debug.apk)
+
+          echo "Размер APK: $APK_SIZE bytes"
+
+          if [ "$APK_SIZE" -lt 100000 ]; then
+            echo "ERROR: APK подозрительно маленький."
+            exit 1
+          fi
+
+          echo "APK создан успешно."
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
