@@ -1,0 +1,59 @@
+name: Build MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MoiFiltry 5.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify project
+        run: |
+          set -e
+          echo "Проверяем структуру проекта..."
+          test -f settings.gradle
+          test -f build.gradle
+          test -f gradle.properties
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/kz/moifiltry/app/MainActivity.java
+          test -f app/src/main/assets/index.html
+          echo "Структура проекта OK"
+
+      - name: Verify delete and call
+        run: |
+          set -e
+          grep -q "function deleteClient" app/src/main/assets/index.html
+          grep -q "db.clients.splice" app/src/main/assets/index.html
