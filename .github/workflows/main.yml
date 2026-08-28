@@ -1,0 +1,165 @@
+name: Build MoiFiltry APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Show repository structure
+        run: |
+          set -e
+          echo "=== Содержимое репозитория ==="
+          find . -maxdepth 4 -type f \
+            -not -path './.git/*' \
+            | sort
+          echo "================================"
+
+      - name: Find and unpack project ZIP
+        run: |
+          set -e
+
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname "*.zip" -not -path './.git/*' | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ОШИБКА: ZIP-файл проекта не найден."
+            exit 1
+          fi
+
+          echo "Найден ZIP: $ZIP_FILE"
+
+          mkdir -p project_unpacked
+          unzip -q "$ZIP_FILE" -d project_unpacked
+
+          echo "=== Содержимое после распаковки ==="
+          find project_unpacked -maxdepth 5 -type f | sort
+          echo "==================================="
+
+      - name: Find Android project root
+        run: |
+          set -e
+
+          echo "Ищем settings.gradle или settings.gradle.kts..."
+
+          PROJECT_ROOT=""
+
+          while IFS= read -r SETTINGS_FILE; do
+            if [ -n "$SETTINGS_FILE" ]; then
+              PROJECT_ROOT=$(dirname "$SETTINGS_FILE")
+              break
+            fi
+          done < <(
+            find project_unpacked \
+              -type f \
+              -name "settings.gradle" -o -name "settings.gradle.kts" \
+              -not -path '*/.git/*' \
+              | sort
+          )
+
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo ""
+            echo "ОШИБКА: settings.gradle / settings.gradle.kts НЕ НАЙДЕН."
+            echo ""
+            echo "Проверяем, что реально находится в ZIP:"
+            find project_unpacked -maxdepth 8 -type f | sort
+            echo ""
+            exit 1
+          fi
+
+          echo "Корень Android-проекта: $PROJECT_ROOT"
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+      - name: Verify Gradle wrapper
+        run: |
+          set -e
+
+          echo "Проверяем Gradle Wrapper..."
+
+          if [ ! -f "$PROJECT_ROOT/gradlew" ]; then
+            echo "ОШИБКА: gradlew не найден в:"
+            echo "$PROJECT_ROOT"
+            echo ""
+            echo "Файлы проекта:"
+            find "$PROJECT_ROOT" -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
+          chmod +x "$PROJECT_ROOT/gradlew"
+
+          echo "gradlew найден:"
+          ls -lh "$PROJECT_ROOT/gradlew"
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          set -e
+
+          echo "Запускаем сборку APK..."
+
+          ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: Find APK
+        run: |
+          set -e
+
+          echo "Ищем готовый APK..."
+
+          APK=$(find "$PROJECT_ROOT" \
+            -type f \
+            -name "*.apk" \
+            -not -path '*/build/intermediates/*' \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ОШИБКА: APK не найден."
+            echo ""
+            echo "Найденные APK-файлы:"
+            find "$PROJECT_ROOT" -type f -name "*.apk" || true
+            exit 1
+          fi
+
+          SIZE=$(stat -c%s "$APK")
+
+          echo "APK найден: $APK"
+          echo "Размер APK: $SIZE байт"
+
+          if [ "$SIZE" -le 0 ]; then
+            echo "ОШИБКА: APK имеет нулевой размер."
+            exit 1
+          fi
+
+          echo "APK корректно создан."
+
+          mkdir -p output
+          cp "$APK" output/app-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-APK
+          path: output/app-debug.apk
+          if-no-files-found: error
