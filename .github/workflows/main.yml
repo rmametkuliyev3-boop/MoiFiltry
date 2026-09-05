@@ -1,0 +1,94 @@
+name: Build MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MoiFiltry 5.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify project
+        run: |
+          set -e
+          echo "Проверяем структуру проекта..."
+          test -f settings.gradle
+          test -f build.gradle
+          test -f gradle.properties
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/kz/moifiltry/app/MainActivity.java
+          test -f app/src/main/assets/index.html
+          echo "Структура проекта OK"
+
+      - name: Verify app features
+        run: |
+          set -e
+          grep -q "applicationId 'kz.moifiltry.app.test'" app/build.gradle
+          grep -q "function saveClient" app/src/main/assets/index.html
+          grep -q "function del" app/src/main/assets/index.html
+          grep -q "function saveHistory" app/src/main/assets/index.html
+          grep -q "deductCartridges" app/src/main/assets/index.html
+          grep -q "cartridgesAvailable" app/src/main/assets/index.html
+          grep -q "GAK" app/src/main/assets/index.html
+          grep -q "Минерализатор" app/src/main/assets/index.html
+          grep -q "RO-мембрана" app/src/main/assets/index.html
+          grep -q "function addBack" app/src/main/assets/index.html
+          grep -q "function deduct" app/src/main/assets/index.html
+          grep -q "function openOverdue" app/src/main/assets/index.html
+          grep -q "function openToday" app/src/main/assets/index.html
+          grep -q "function addHistory" app/src/main/assets/index.html
+          grep -q "function openCalendar" app/src/main/assets/index.html
+          grep -q "function openStock" app/src/main/assets/index.html
+          grep -q "public void call" app/src/main/java/kz/moifiltry/app/MainActivity.java
+          grep -q "ACTION_DIAL" app/src/main/java/kz/moifiltry/app/MainActivity.java
+          echo "Основные функции, история, календарь, кружки и склад OK"
+
+      - name: Build APK
+        run: |
+          set -e
+          gradle clean assembleDebug --stacktrace --no-daemon
+
+      - name: Check APK
+        run: |
+          set -e
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-5.1-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
