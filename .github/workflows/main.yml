@@ -1,0 +1,182 @@
+name: Сборка MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Сборка MoiFiltry 5.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Скачать репозиторий
+        uses: actions/checkout@v4
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Найти Android-проект
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT_ROOT=""
+
+          # Если Android-проект уже лежит в корне репозитория
+          if [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ]; then
+            PROJECT_ROOT="$GITHUB_WORKSPACE"
+          else
+            # Ищем ZIP проекта
+            ZIP_FILE="$(find "$GITHUB_WORKSPACE" \
+              -maxdepth 1 \
+              -type f \
+              -iname '*.zip' \
+              -print -quit)"
+
+            if [ -z "$ZIP_FILE" ]; then
+              echo "ОШИБКА: ZIP-файл проекта не найден."
+              exit 1
+            fi
+
+            echo "Найден ZIP: $ZIP_FILE"
+
+            EXTRACT_DIR="$GITHUB_WORKSPACE/_android_project"
+            rm -rf "$EXTRACT_DIR"
+            mkdir -p "$EXTRACT_DIR"
+
+            unzip -q -o "$ZIP_FILE" -d "$EXTRACT_DIR"
+
+            # Ищем настоящий корень Android-проекта
+            SETTINGS_FILE="$(find "$EXTRACT_DIR" \
+              -type f \
+              \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+              -print -quit)"
+
+            if [ -z "$SETTINGS_FILE" ]; then
+              echo "ОШИБКА: после распаковки settings.gradle не найден."
+              echo "Содержимое распакованного ZIP:"
+              find "$EXTRACT_DIR" -maxdepth 5 -type f | sort
+              exit 1
+            fi
+
+            PROJECT_ROOT="$(dirname "$SETTINGS_FILE")"
+          fi
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+
+          echo "======================================"
+          echo "Android project:"
+          echo "$PROJECT_ROOT"
+          echo "======================================"
+
+      - name: Проверить структуру проекта
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
+
+          test -f settings.gradle || test -f settings.gradle.kts
+          test -f build.gradle || test -f build.gradle.kts
+          test -f app/build.gradle || test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/assets/index.html
+          test -f app/src/main/java/kz/moifiltry/app/MainActivity.java
+
+          echo "Структура проекта проверена: OK"
+
+      - name: Проверить необходимые функции
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
+
+          HTML="app/src/main/assets/index.html"
+          JAVA="app/src/main/java/kz/moifiltry/app/MainActivity.java"
+
+          grep -q "function deleteClient" "$HTML"
+          grep -q "function saveService" "$HTML"
+          grep -q "function shareHistory" "$HTML"
+          grep -q "function historyHtml" "$HTML"
+          grep -q "function callClient" "$HTML"
+
+          # Проверяем правильный порядок картриджей
+          grep -q "const cartridges=\['PP5','GAC','CTO','PP1','Пост-фильтр','Минерализатор','RO-мембрана'\]" "$HTML"
+
+          # Проверяем Android-функции
+          grep -q "ACTION_DIAL" "$JAVA"
+          grep -q "shareWhatsApp" "$JAVA"
+
+          echo "Функции приложения проверены: OK"
+          echo "Порядок картриджей проверен: PP5 → GAC → CTO → PP1 → Пост-фильтр → Минерализатор → RO-мембрана"
+
+      - name: Установить Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Установить Android SDK 35
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Установить Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Собрать APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_ROOT"
+
+          gradle clean assembleDebug \
+            --stacktrace \
+            --no-daemon
+
+      - name: Проверить готовый APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$PROJECT_ROOT/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ОШИБКА: APK не создан."
+            exit 1
+          fi
+
+          SIZE="$(stat -c%s "$APK")"
+
+          if [ "$SIZE" -le 1000 ]; then
+            echo "ОШИБКА: APK подозрительно маленький."
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "APK успешно создан"
+          echo "Размер: $SIZE байт"
+          ls -lh "$APK"
+          echo "======================================"
+
+      - name: Загрузить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-5.1-APK
+          path: ${{ env.PROJECT_ROOT }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
