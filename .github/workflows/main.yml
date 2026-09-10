@@ -1,0 +1,93 @@
+name: Сборка MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Сборка MoiFiltry 5.1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить проект
+        uses: actions/checkout@v4
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Установить Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Установить Android SDK 35
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Установить Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Проверить структуру проекта
+        run: |
+          set -e
+
+          test -f settings.gradle
+          test -f build.gradle
+          test -f gradle.properties
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/kz/moifiltry/app/MainActivity.java
+          test -f app/src/main/assets/index.html
+
+          echo "Структура проекта OK"
+
+      - name: Проверить функции приложения
+        run: |
+          set -e
+
+          grep -q "function deleteClient" app/src/main/assets/index.html
+          grep -q "db.clients.splice" app/src/main/assets/index.html
+
+          grep -q "function callClient" app/src/main/assets/index.html
+          grep -q "ACTION_DIAL" app/src/main/java/kz/moifiltry/app/MainActivity.java
+
+          grep -q "function saveService" app/src/main/assets/index.html
+          grep -q "function shareHistory" app/src/main/assets/index.html
+          grep -q "function historyHtml" app/src/main/assets/index.html
+
+          grep -q "PP5.*GAC.*CTO.*PP1.*Пост-фильтр.*Минерализатор.*RO-мембрана" app/src/main/assets/index.html
+
+          echo "Функции и порядок картриджей OK"
+
+      - name: Собрать APK
+        run: |
+          set -e
+          gradle clean assembleDebug --stacktrace --no-daemon
+
+      - name: Проверить APK
+        run: |
+          set -e
+
+          test -f app/build/outputs/apk/debug/app-debug.apk
+
+          echo "APK успешно собран:"
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Загрузить APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-5.1-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
