@@ -1,0 +1,206 @@
+name: Сборка MoiFiltry 5.1 APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.7'
+
+      - name: Find and unzip project
+        shell: bash
+        run: |
+          set -e
+
+          ZIP="MoiFiltry_5_1_UI_CIRCLES_HISTORY_FINAL_CORRECTED.zip"
+
+          test -f "$ZIP" || {
+            echo "ERROR: ZIP not found: $ZIP"
+            exit 1
+          }
+
+          rm -rf _android_project
+          mkdir _android_project
+
+          unzip -q "$ZIP" -d _android_project
+
+          SETTINGS=$(find _android_project -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -n 1)
+
+          test -n "$SETTINGS" || {
+            echo "ERROR: settings.gradle/settings.gradle.kts not found"
+            exit 1
+          }
+
+          PROJECT_ROOT=$(dirname "$SETTINGS")
+
+          echo "PROJECT_ROOT=$PROJECT_ROOT" >> "$GITHUB_ENV"
+          echo "Found Android project: $PROJECT_ROOT"
+
+      - name: Validate project
+        shell: bash
+        run: |
+          set -e
+
+          ROOT="$PROJECT_ROOT"
+          BUILD="$ROOT/app/build.gradle"
+          HTML="$ROOT/app/src/main/assets/index.html"
+
+          test -f "$BUILD" || {
+            echo "ERROR: app/build.gradle not found"
+            exit 1
+          }
+
+          test -f "$HTML" || {
+            echo "ERROR: index.html not found"
+            exit 1
+          }
+
+          grep -q "kz.moifiltry.app51" "$BUILD" || {
+            echo "ERROR: applicationId is wrong"
+            exit 1
+          }
+
+          grep -q "versionName.*5.1" "$BUILD" || {
+            echo "ERROR: versionName 5.1 not found"
+            exit 1
+          }
+
+          grep -q "versionCode.*10" "$BUILD" || {
+            echo "ERROR: versionCode 10 not found"
+            exit 1
+          }
+
+          grep -q "showTaskList" "$HTML" || {
+            echo "ERROR: task list function not found"
+            exit 1
+          }
+
+          grep -q "showTaskList('today')" "$HTML" || {
+            echo "ERROR: today task handler not found"
+            exit 1
+          }
+
+          grep -q "showTaskList('overdue')" "$HTML" || {
+            echo "ERROR: overdue task handler not found"
+            exit 1
+          }
+
+          grep -q 'class="statLabel"' "$HTML" || {
+            echo "ERROR: circle labels not found outside circles"
+            exit 1
+          }
+
+          grep -q "completeService" "$HTML" || {
+            echo "ERROR: completeService not found"
+            exit 1
+          }
+
+          grep -q "PP5.*GAC.*CTO.*PP1.*Пост-фильтр.*Минерализатор.*Мембрана" "$HTML" || {
+            echo "ERROR: cartridge order is wrong"
+            exit 1
+          }
+
+          echo "All project checks passed."
+
+      - name: Gradle check
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          gradle --no-daemon --stacktrace help
+
+      - name: Build release APK
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Sign APK
+        shell: bash
+        run: |
+          set -e
+
+          APK=$(find "$PROJECT_ROOT/app/build/outputs/apk/release" -type f -name "*.apk" | head -n 1)
+
+          test -n "$APK" || {
+            echo "ERROR: Release APK not found"
+            exit 1
+          }
+
+          mkdir -p signing
+
+          keytool -genkeypair \
+            -keystore signing/moifiltry.keystore \
+            -storepass android \
+            -keypass android \
+            -alias moifiltry \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=MoiFiltry"
+
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" \
+            -f 4 \
+            "$APK" \
+            signing/aligned.apk
+
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks signing/moifiltry.keystore \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out MoiFiltry-5.1.apk \
+            signing/aligned.apk
+
+          test -f MoiFiltry-5.1.apk
+
+          echo "APK successfully built and signed."
+
+      - name: Validate APK
+        shell: bash
+        run: |
+          set -e
+
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+
+          "$AAPT" dump badging MoiFiltry-5.1.apk | grep "package: name='kz.moifiltry.app51'"
+          "$AAPT" dump badging MoiFiltry-5.1.apk | grep "versionName='5.1'"
+          "$AAPT" dump badging MoiFiltry-5.1.apk | grep "versionCode='10'"
+
+          echo "APK validation passed."
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v5
+        with:
+          name: MoiFiltry-5.1-APK
+          path: MoiFiltry-5.1.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="moifiltry-5.1-build-${{ github.run_number }}"
+
+          gh release create "$TAG" \
+            MoiFiltry-5.1.apk \
+            --title "MoiFiltry 5.1 — Build ${{ github.run_number }}" \
+            --notes "MoiFiltry 5.1 APK build."
