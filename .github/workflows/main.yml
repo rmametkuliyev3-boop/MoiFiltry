@@ -1,0 +1,100 @@
+name: Build MoiFiltry APK 2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build MoiFiltry 2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Android project
+        run: |
+          set -e
+          if [ ! -f settings.gradle ] && [ ! -f settings.gradle.kts ]; then
+            ZIP_FILE=$(find . -maxdepth 1 -type f -iname 'MoiFiltry_*.zip' | sort | tail -n 1)
+            if [ -z "$ZIP_FILE" ]; then
+              echo "Не найден ZIP MoiFiltry в корне репозитория"
+              exit 1
+            fi
+            echo "Распаковываем $ZIP_FILE"
+            rm -rf /tmp/moifiltry-project
+            mkdir -p /tmp/moifiltry-project
+            unzip -q "$ZIP_FILE" -d /tmp/moifiltry-project
+            PROJECT_DIR=$(find /tmp/moifiltry-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit | xargs -r dirname)
+            if [ -z "$PROJECT_DIR" ]; then
+              echo "В ZIP не найден Android-проект"
+              exit 1
+            fi
+            cp -a "$PROJECT_DIR"/. .
+          fi
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Verify project and UI
+        run: |
+          set -e
+          test -f settings.gradle || test -f settings.gradle.kts
+          test -f build.gradle || test -f build.gradle.kts
+          test -f app/build.gradle || test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/assets/index.html
+          grep -q 'width:48px;height:48px' app/src/main/assets/index.html
+          ! grep -q 'width:56px;height:56px' app/src/main/assets/index.html
+          grep -q 'Вастерлайн' app/src/main/assets/index.html
+          grep -q 'Ecosoft' app/src/main/assets/index.html
+          grep -q 'FitAqua' app/src/main/assets/index.html
+          grep -q 'serviceHistory' app/src/main/assets/index.html
+          grep -q 'homeSearch' app/src/main/assets/index.html
+          grep -q 'menuBtn' app/src/main/assets/index.html
+          grep -q 'openTopCalendar' app/src/main/assets/index.html
+          grep -q "📅 '+ruDate(todayISO())" app/src/main/assets/index.html
+          ! grep -q 'onclick="calendar();closeMenu()"' app/src/main/assets/index.html
+          echo 'Проверка проекта и UI OK'
+
+      - name: Build single APK
+        run: |
+          set -e
+          gradle clean assembleDebug --stacktrace --no-daemon
+
+      - name: Check APK
+        run: |
+          set -e
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry-2-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
