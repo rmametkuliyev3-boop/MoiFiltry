@@ -1,0 +1,161 @@
+name: Сборка MoiFiltry APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+jobs:
+  build:
+    name: Сборка MoiFiltry 81
+    runs-on: ubuntu-latest
+    steps:
+      - name: Получить текущий репозиторий
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Жёстко проверить источник 81
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t ZIPS < <(find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort)
+          if [ "${#ZIPS[@]}" -ne 1 ]; then
+            echo "ОШИБКА: в корне должен быть ровно один ZIP-источник."
+            printf '%s\n' "${ZIPS[@]}"
+            exit 1
+          fi
+
+          ZIP_NAME="${ZIPS[0]}"
+          if [[ ! "$ZIP_NAME" =~ ^MoiFiltry_81([_-].*)?\.zip$ ]]; then
+            echo "ОШИБКА: имя источника должно быть ZIP 81: MoiFiltry_81*.zip, найдено: $ZIP_NAME"
+            exit 1
+          fi
+
+          rm -rf "$RUNNER_TEMP/moifiltry-project"
+          mkdir -p "$RUNNER_TEMP/moifiltry-project"
+          unzip -q "$ZIP_NAME" -d "$RUNNER_TEMP/moifiltry-project"
+
+          SETTINGS_FILE="$(find "$RUNNER_TEMP/moifiltry-project" -type f -name settings.gradle -print -quit)"
+          test -n "$SETTINGS_FILE" || { echo "ОШИБКА: settings.gradle не найден"; exit 1; }
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+
+          test -f "$PROJECT_DIR/app/build.gradle"
+          APP_ID="$(sed -n "s/.*applicationId ['\"]\([^'\"]*\)['\"].*/\1/p" "$PROJECT_DIR/app/build.gradle" | head -n 1)"
+          VERSION_NAME="$(sed -n "s/.*versionName ['\"]\([^'\"]*\)['\"].*/\1/p" "$PROJECT_DIR/app/build.gradle" | head -n 1)"
+
+          test "$APP_ID" = "kz.moifiltry.app.v81" || { echo "ОШИБКА: applicationId=$APP_ID"; exit 1; }
+          test "$VERSION_NAME" = "8.1" || { echo "ОШИБКА: versionName=$VERSION_NAME"; exit 1; }
+
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Источник подтверждён: $ZIP_NAME"
+          echo "Проект: $PROJECT_DIR"
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Проверить Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$ANDROID_HOME/platforms/android-35"
+          test -d "$ANDROID_HOME/build-tools/35.0.0"
+          test -x "$ANDROID_HOME/platform-tools/adb"
+
+      - name: Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Глубокая проверка проекта 81
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          test -f settings.gradle
+          test -f build.gradle
+          test -f gradle.properties
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/assets/index.html
+          test -f app/src/main/java/kz/moifiltry/app/MainActivity.java
+
+          grep -Fq "applicationId 'kz.moifiltry.app.v81'" app/build.gradle
+          grep -Fq "versionName '8.1'" app/build.gradle
+
+          # Сервис: история — единственный источник последней фактической замены.
+          grep -Fq 'function serviceHistorySorted' app/src/main/assets/index.html
+          grep -Fq 'function isPlannedCompleted' app/src/main/assets/index.html
+          grep -Fq 'function completeTask' app/src/main/assets/index.html
+          grep -Fq "plannedDate,items,comment:'',completed:true" app/src/main/assets/index.html
+          ! grep -Fq 'c.lastReplacementDate=actual' app/src/main/assets/index.html
+          ! grep -Fq 'completedDates||[]' app/src/main/assets/index.html
+
+          # Финансы: drawer, повторяемый сенсор, калькулятор и происхождение перевода.
+          grep -Fq 'function financeBindDrag' app/src/main/assets/index.html
+          grep -Fq "document.addEventListener('pointerdown',financePointerDown" app/src/main/assets/index.html
+          grep -Fq "document.addEventListener('pointermove',financePointerMove" app/src/main/assets/index.html
+          grep -Fq "document.addEventListener('pointerup'" app/src/main/assets/index.html
+          grep -Fq "document.addEventListener('pointercancel'" app/src/main/assets/index.html
+          grep -Fq 'function financeOpenCalculator' app/src/main/assets/index.html
+          grep -Fq "(from||'Счёт')+' → '+(to||'Счёт')" app/src/main/assets/index.html
+          grep -Fq 'class="financeDrawer"' app/src/main/assets/index.html
+          grep -Fq 'Общие данные' app/src/main/assets/index.html
+          grep -Fq 'Статистика' app/src/main/assets/index.html
+          grep -Fq 'История' app/src/main/assets/index.html
+
+          # В финансовом интерфейсе не должно быть старой нижней панели, подсказки или календаря.
+          ! grep -Fq 'financeActionBar' app/src/main/assets/index.html
+          ! grep -Fq 'financeHint' app/src/main/assets/index.html
+          ! grep -Fq 'financeDatePrompt' app/src/main/assets/index.html
+          ! grep -Fq 'financeHeaderDate' app/src/main/assets/index.html
+          ! grep -Fq 'financeFilterDate' app/src/main/assets/index.html
+
+          # Сохранение/восстановление и остальные согласованные функции.
+          grep -Fq 'Android.backup(JSON.stringify({version:2,filters:db,finance:financeDb}))' app/src/main/assets/index.html
+          grep -Fq 'Android.restore()' app/src/main/assets/index.html
+          grep -Fq 'addressExtra' app/src/main/assets/index.html
+          grep -Fq "const cartridges=['PP5','GAC','CTO','PP1','Пост-фильтр','Минерализатор','RO-мембрана']" app/src/main/assets/index.html
+          grep -Fq "const brands=['Вастерлайн','Ecosoft','FitAqua']" app/src/main/assets/index.html
+
+          sed -n '/<script>/,/<\/script>/p' app/src/main/assets/index.html | sed '1d;$d' > "$RUNNER_TEMP/moifiltry-check.js"
+          node --check "$RUNNER_TEMP/moifiltry-check.js"
+          node --check script.js
+          cmp -s "$RUNNER_TEMP/moifiltry-check.js" script.js || { echo "ОШИБКА: script.js и встроенный JS index.html расходятся"; exit 1; }
+
+      - name: Собрать APK 81
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle clean assembleDebug --stacktrace --no-daemon
+
+      - name: Проверить и подготовить APK 81
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t APKS < <(find "$PROJECT_DIR/app/build/outputs/apk" -type f -name '*.apk' | sort)
+          if [ "${#APKS[@]}" -ne 1 ]; then
+            echo "ОШИБКА: ожидался ровно один APK, найдено: ${#APKS[@]}"
+            printf '%s\n' "${APKS[@]}"
+            exit 1
+          fi
+          cp "${APKS[0]}" "$GITHUB_WORKSPACE/MoiFiltry_81.apk"
+
+      - name: Загрузить APK 81
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry_81
+          path: MoiFiltry_81.apk
+          if-no-files-found: error
