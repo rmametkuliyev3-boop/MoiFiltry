@@ -1,0 +1,65 @@
+name: Сборка MoiFiltry APK
+
+on:
+  push:
+    paths:
+      - "*.zip"
+      - ".github/workflows/main.yml"
+      - "main.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+jobs:
+  build:
+    name: Сборка MoiFiltry 86
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить текущий коммит репозитория
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Проверить ZIP 86 и версию проекта
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f .github/workflows/main.yml
+
+          mapfile -t ZIPS < <(
+            find . -maxdepth 1 -type f -name '*.zip' -printf '%f\n' | sort
+          )
+
+          if [ "${#ZIPS[@]}" -ne 1 ]; then
+            echo "ОШИБКА: в корне должен находиться ровно один ZIP-источник."
+            printf '%s\n' "${ZIPS[@]}"
+            exit 1
+          fi
+
+          ZIP_NAME="${ZIPS[0]}"
+
+          [[ "$ZIP_NAME" =~ ^MoiFiltry_86([_-].*)?\.zip$ ]] || {
+            echo "ОШИБКА: найден не ZIP 86: $ZIP_NAME"
+            exit 1
+          }
+
+          rm -rf "$RUNNER_TEMP/moifiltry-project"
+          mkdir -p "$RUNNER_TEMP/moifiltry-project"
+
+          unzip -q "$ZIP_NAME" -d "$RUNNER_TEMP/moifiltry-project"
+
+          SETTINGS_FILE="$(
+            find "$RUNNER_TEMP/moifiltry-project" \
+              -type f \
+              -name settings.gradle \
+              -print -quit
+          )"
+
+          test -
