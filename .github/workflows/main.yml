@@ -1,0 +1,203 @@
+name: Сборка MoiFiltry APK
+
+on:
+  push:
+    paths:
+      - 'MoiFiltry_*.zip'
+      - '.github/workflows/main.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moifiltry-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+jobs:
+  build:
+    name: Сборка нового ZIP автоматически
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Получить текущий коммит
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: ПРОВЕРКА АВТОЗАПУСКА И ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Событие GitHub: ${{ github.event_name }}"
+          echo "Коммит: $GITHUB_SHA"
+
+          mapfile -t ZIPS < <(
+            find . -maxdepth 1 -type f -name 'MoiFiltry_*.zip' -printf '%f\n' | sort -V
+          )
+
+          test "${#ZIPS[@]}" -gt 0 || {
+            echo 'ОШИБКА: в корне нет MoiFiltry_*.zip'
+            exit 1
+          }
+
+          ZIP_NAME="${ZIPS[${#ZIPS[@]}-1]}"
+          echo "НАЙДЕН САМЫЙ НОВЫЙ ZIP: $ZIP_NAME"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" |
+              grep -E '^MoiFiltry_.*\.zip$' >/dev/null || {
+                echo 'ОШИБКА: push не содержит нового MoiFiltry_*.zip.'
+                echo 'Если изменён только YAML, это не считается автоматической сборкой нового ZIP.'
+                exit 1
+              }
+          fi
+
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+
+      - name: Распаковать самый новый ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$RUNNER_TEMP/moifiltry-project"
+          mkdir -p "$RUNNER_TEMP/moifiltry-project"
+          unzip -q "$ZIP_NAME" -d "$RUNNER_TEMP/moifiltry-project"
+
+          SETTINGS_FILE="$(
+            find "$RUNNER_TEMP/moifiltry-project" \
+              -type f \
+              -name settings.gradle \
+              -print -quit
+          )"
+
+          test -n "$SETTINGS_FILE" || {
+            echo 'ОШИБКА: settings.gradle не найден.'
+            exit 1
+          }
+
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+
+          test -f "$PROJECT_DIR/app/build.gradle"
+
+          APP_ID="$(
+            grep -E "^[[:space:]]*applicationId[[:space:]]+['\"]" \
+              "$PROJECT_DIR/app/build.gradle" |
+            head -n1 |
+            awk '{print $2}' |
+            tr -d "'\""
+          )"
+
+          VERSION_NAME="$(
+            grep -E "^[[:space:]]*versionName[[:space:]]+['\"]" \
+              "$PROJECT_DIR/app/build.gradle" |
+            head -n1 |
+            awk '{print $2}' |
+            tr -d "'\""
+          )"
+
+          VERSION_CODE="$(
+            grep -E "^[[:space:]]*versionCode[[:space:]]+" \
+              "$PROJECT_DIR/app/build.gradle" |
+            head -n1 |
+            awk '{print $2}'
+          )"
+
+          APP_VERSION="${APP_ID##*.v}"
+
+          test "$APP_ID" = "kz.moifiltry.app.v$APP_VERSION"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+
+          echo "Используется ZIP: $ZIP_NAME"
+          echo "applicationId=$APP_ID"
+          echo "versionName=$VERSION_NAME"
+          echo "versionCode=$VERSION_CODE"
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Проверить Android SDK 35
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$ANDROID_HOME/platforms/android-35"
+          test -d "$ANDROID_HOME/build-tools/35.0.0"
+
+      - name: Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Проверить проект и код
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          test -f settings.gradle
+          test -f build.gradle
+          test -f gradle.properties
+          test -f app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/assets/index.html
+          test -f app/src/main/java/kz/moifiltry/app/MainActivity.java
+
+          grep -Fq "applicationId 'kz.moifiltry.app.v$APP_VERSION'" app/build.gradle
+          grep -Fq "versionName '$VERSION_NAME'" app/build.gradle
+          grep -Fq "versionCode $VERSION_CODE" app/build.gradle
+          grep -Fq "JavaVersion.VERSION_17" app/build.gradle
+          grep -Fq "compileSdk 35" app/build.gradle
+
+          node --check script.js
+
+          sed -n '/<script>/,/<\/script>/p' app/src/main/assets/index.html |
+            sed '1d;$d' > "$RUNNER_TEMP/moifiltry-check.js"
+
+          node --check "$RUNNER_TEMP/moifiltry-check.js"
+
+          grep -Fq 'function warehouseHome()' app/src/main/assets/index.html
+          grep -Fq 'function openServiceItemEditor' app/src/main/assets/index.html
+          grep -Fq 'serviceHistoryItemButton' app/src/main/assets/index.html
+
+      - name: Собрать APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle clean assembleDebug --stacktrace --no-daemon
+
+      - name: Проверить APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t APKS < <(
+            find "$PROJECT_DIR/app/build/outputs/apk" \
+              -type f \
+              -name '*.apk' |
+            sort
+          )
+
+          test "${#APKS[@]}" -eq 1
+          test -s "${APKS[0]}"
+
+          cp "${APKS[0]}" "$GITHUB_WORKSPACE/MoiFiltry_${APP_VERSION}.apk"
+
+      - name: Загрузить один APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoiFiltry_${{ env.APP_VERSION }}
+          path: MoiFiltry_${{ env.APP_VERSION }}.apk
+          if-no-files-found: error
